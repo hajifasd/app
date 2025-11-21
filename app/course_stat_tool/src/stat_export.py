@@ -1,6 +1,7 @@
 import pandas as pd
 from yaml import safe_load
 import re
+from typing import List, Dict
 
 # 加载配置文件
 with open("config.yaml", "r", encoding="utf-8") as f:
@@ -101,3 +102,20 @@ def parse_week_numbers(week_str):
 
         # 其它格式忽略
     return intervals
+
+
+def export_courses_to_csv(courses: List[Dict], output_path: str) -> str:
+    """优化CSV导出，只保留核心字段"""
+    df = pd.DataFrame(courses)
+    core_columns = [
+        "文件来源", "sheet/页码", "课程名称", "讲师", "课时",
+        "分类", "周次", "地点", "节次", "时间段"
+    ]
+    # 仅保留存在的核心列
+    cols = [c for c in core_columns if c in df.columns]
+    df = df[cols]
+    # 删除无课程名称的行
+    if "课程名称" in df.columns:
+        df = df.dropna(subset=["课程名称"])
+    df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    return output_path

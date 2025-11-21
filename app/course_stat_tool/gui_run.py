@@ -21,50 +21,41 @@ from datetime import datetime
 
 
 def extract_teacher_from_cell(text):
-    """尝试从单元格文本中提取讲师，按多种常见格式优先匹配。
-
-    返回讲师名或 '未知讲师'
-    """
+    """优化后的讲师提取，支持多语种和特殊符号"""
     if not text:
         return "未知讲师"
-    # 优先匹配带关键字的格式
-    patterns = [r'讲师[:：]\s*([^，,;/\\()]+)', r'教师[:：]\s*([^，,;/\\()]+)', r'授课人[:：]\s*([^，,;/\\()]+)']
+    # 扩展关键字匹配（支持中英文冒号和分隔符）
+    patterns = [
+        r'讲师[:：]\s*([^，,;/\\()\n]+)',
+        r'教师[:：]\s*([^，,;/\\()\n]+)',
+        r'授课人[:：]\s*([^，,;/\\()\n]+)',
+        r'Instructor[:：]\s*([^,;\/\\()\n]+)',  # 英文标识
+        r'Teacher[:：]\s*([^,;\/\\()\n]+)'
+    ]
     for p in patterns:
         m = re.search(p, text)
         if m:
-            name = m.group(1).strip()
-            if name:
-                return name
-
-    # 常见斜杠分隔形式，如 '课程/张三/地点' 或 '/张三/'，以及多候选形式 '张三/李四'
-    # 先按斜杠或逗号分割，优先选择第一个看起来像人名的候选
-    candidates = re.split(r'[\/，,;]', text)
+            return m.group(1).strip()
+    
+    # 多语种人名判断（放宽限制）
     def is_name(s):
         s = s.strip()
-        if not s:
+        if not s or len(s) > 50:
             return False
-        # 排除含有关键词或数字的候选
-        if any(k in s for k in ["本", "计算机", "数学", "电信工", "大数据"]):
+        # 排除明显非人名的关键词（扩展列表）
+        exclude_keywords = ["课程", "计算机", "数学", "教室", "楼", "实验", "周次", "节次"]
+        if any(k in s for k in exclude_keywords):
             return False
-        if re.search(r'\d', s):
-            return False
-        # 限制长度（1到30）
-        return 1 <= len(s) <= 30
+        # 允许包含字母、汉字、点、横线等
+        return re.match(r'^[\w\u4e00-\u9fa5·•\- ]+$', s) is not None
 
-    for cand in candidates:
-        c = cand.strip()
-        # 去掉括号内说明，如 '张三(主讲)'
-        c = re.sub(r'[()（）].*?$', '', c).strip()
-        if is_name(c):
-            return c
-
-    # 结尾处格式如 '...：张三' 或 '... / 张三'
-    m = re.search(r'[:：/]\s*([^/，,;\n]+)$', text)
-    if m:
-        name = re.sub(r'[()（）].*?$', '', m.group(1).strip())
-        if is_name(name):
-            return name
-
+    # 尝试按常见分隔符分割
+    for sep in [r'[\/，,;:\t]', r'[|]', r'[()]']:
+        candidates = re.split(sep, text)
+        for cand in candidates:
+            c = re.sub(r'[()（）].*?$', '', cand).strip()
+            if is_name(c):
+                return c
     return "未知讲师"
 
 
@@ -333,6 +324,10 @@ class CourseParserGUI:
         self.all_courses = []
         self.cleaned_courses = []
         self.stat_result = None
+        # 纠错窗口相关
+        self.error_correction_window = None
+        self.current_correction_index = 0
+        self.corrected_courses = []
         
         # ---------------------- 界面布局 ----------------------
         # 1. 顶部文件选择区
@@ -367,6 +362,13 @@ class CourseParserGUI:
         self.export_btn.pack(side=tk.LEFT, padx=5)
         self.debug_export_btn = ttk.Button(self.btn_frame, text="导出调试CSV", command=self.export_debug_csv, state=tk.DISABLED)
         self.debug_export_btn.pack(side=tk.LEFT, padx=5)
+        # 纠错窗口按钮（解析后启用）
+        self.correction_btn = ttk.Button(self.btn_frame, text="纠错窗口", command=self.show_correction_window, state=tk.DISABLED)
+        self.correction_btn.pack(side=tk.LEFT, padx=5)
+        # 额外控制区（放置课程信息纠错快捷按钮）
+        self.control_frame = ttk.Frame(root, padding="6")
+        self.control_frame.pack(fill=tk.X, expand=False, padx=10)
+        tk.Button(self.control_frame, text="课程信息纠错", command=self.show_correction_window).pack(side=tk.LEFT, padx=5)
 
         # 3.1 去重选项（可配置去重键）
         self.dedupe_frame = ttk.Frame(root, padding="6")
@@ -460,6 +462,7 @@ class CourseParserGUI:
             self.show_stat()
             self.export_btn.config(state=tk.NORMAL)
             self.debug_export_btn.config(state=tk.NORMAL)
+            self.correction_btn.config(state=tk.NORMAL)
             messagebox.showinfo("解析成功", f"共解析 {len(self.all_courses)} 条记录，去重后 {len(self.cleaned_courses)} 条有效记录！")
         else:
             self.stat_text.config(state=tk.NORMAL)
@@ -581,6 +584,114 @@ class CourseParserGUI:
         except Exception as e:
             self.log(f"调试CSV导出失败：{str(e)}")
             messagebox.showerror("导出失败", f"导出调试 CSV 失败：{str(e)}")
+
+    # ---------------------- 纠错窗口功能 ----------------------
+    def show_correction_window(self):
+        """显示待纠错课程列表窗口"""
+        if not self.all_courses:
+            messagebox.showinfo("提示", "没有可纠错的课程数据")
+            return
+        
+        # 筛选可能需要纠错的记录
+        self.correction_candidates = [
+            (i, course) for i, course in enumerate(self.all_courses)
+            if course.get("讲师") == "未知讲师" 
+            or not course.get("课程名称")
+            or "未知" in course.get("分类", "")
+        ]
+        
+        if not self.correction_candidates:
+            messagebox.showinfo("提示", "没有检测到需要纠错的课程")
+            return
+        
+        self.current_correction_index = 0
+        self.corrected_courses = self.all_courses.copy()
+        self._create_correction_window()
+
+    def _create_correction_window(self):
+        """创建纠错窗口"""
+        if self.error_correction_window:
+            self.error_correction_window.destroy()
+        
+        self.error_correction_window = tk.Toplevel(self.root)
+        self.error_correction_window.title(f"课程信息纠错 ({self.current_correction_index + 1}/{len(self.correction_candidates)})")
+        self.error_correction_window.geometry("600x400")
+        
+        # 获取当前待纠错课程
+        idx, course = self.correction_candidates[self.current_correction_index]
+        
+        # 显示原始数据
+        tk.Label(self.error_correction_window, text="文件来源:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        tk.Label(self.error_correction_window, text=course.get("文件来源", "未知")).grid(row=0, column=1, sticky="w", padx=5, pady=5)
+        
+        # 课程名称输入
+        tk.Label(self.error_correction_window, text="课程名称:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+        self.course_name_var = tk.StringVar(value=course.get("课程名称", ""))
+        tk.Entry(self.error_correction_window, textvariable=self.course_name_var, width=50).grid(row=1, column=1, padx=5, pady=5)
+        
+        # 讲师输入
+        tk.Label(self.error_correction_window, text="讲师:").grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        self.teacher_var = tk.StringVar(value=course.get("讲师", ""))
+        tk.Entry(self.error_correction_window, textvariable=self.teacher_var, width=50).grid(row=2, column=1, padx=5, pady=5)
+        
+        # 分类（改为下拉以避免手动错误）
+        tk.Label(self.error_correction_window, text="分类:").grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        self.category_var = tk.StringVar(value=course.get("分类", "未知"))
+        category_options = ["理论", "实验", "上机", "实践", "未知"]
+        tk.OptionMenu(self.error_correction_window, self.category_var, *category_options).grid(row=3, column=1, padx=5, pady=5, sticky="w")
+        
+        # 地点输入（新增）
+        tk.Label(self.error_correction_window, text="地点:").grid(row=4, column=0, sticky="w", padx=5, pady=5)
+        self.location_var = tk.StringVar(value=course.get("地点", ""))
+        tk.Entry(self.error_correction_window, textvariable=self.location_var, width=50).grid(row=4, column=1, padx=5, pady=5)
+
+        # 原始文本（用于参考）
+        tk.Label(self.error_correction_window, text="原始数据参考:").grid(row=5, column=0, sticky="nw", padx=5, pady=5)
+        raw_text = f"课程名原文: {course.get('来源原文_课程名', '')}\n讲师原文: {course.get('来源原文_讲师', '')}\n原始分类: {course.get('分类', '')}\n原始地点: {course.get('地点', '')}"
+        tk.Text(self.error_correction_window, height=4, width=50).grid(row=5, column=1, padx=5, pady=5)
+        self.error_correction_window.grid_slaves(row=5, column=1)[0].insert(tk.END, raw_text)
+        
+        # 按钮区
+        btn_frame = tk.Frame(self.error_correction_window)
+        btn_frame.grid(row=5, column=0, columnspan=2, pady=20)
+        
+        tk.Button(btn_frame, text="上一条", command=self._prev_correction).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="保存", command=lambda: self._save_correction(idx)).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="下一条", command=self._next_correction).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="完成", command=self._finish_correction).pack(side=tk.LEFT, padx=10)
+
+    def _save_correction(self, original_index):
+        """保存当前纠错结果（新增地点和分类）"""
+        self.corrected_courses[original_index].update({
+            "课程名称": self.course_name_var.get().strip(),
+            "讲师": self.teacher_var.get().strip(),
+            "地点": self.location_var.get().strip(),
+            "分类": self.category_var.get().strip()
+        })
+        messagebox.showinfo("提示", "已保存修改")
+
+    def _prev_correction(self):
+        """上一条纠错记录"""
+        if self.current_correction_index > 0:
+            self.current_correction_index -= 1
+            self._create_correction_window()
+
+    def _next_correction(self):
+        """下一条纠错记录"""
+        if self.current_correction_index < len(self.correction_candidates) - 1:
+            self.current_correction_index += 1
+            self._create_correction_window()
+
+    def _finish_correction(self):
+        """完成纠错，更新课程数据"""
+        self.all_courses = self.corrected_courses
+        if self.error_correction_window:
+            self.error_correction_window.destroy()
+            self.error_correction_window = None
+        messagebox.showinfo("提示", f"已完成所有纠错，共处理 {len(self.correction_candidates)} 条记录")
+        # 自动重新清洗数据
+        self.cleaned_courses = clean_courses(self.all_courses)
+        self.log(f"已应用纠错结果，当前有效课程数: {len(self.cleaned_courses)}")
 
 # ---------------------- 运行GUI ----------------------
 if __name__ == "__main__":
