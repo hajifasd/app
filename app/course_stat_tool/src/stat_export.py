@@ -1,11 +1,21 @@
 import pandas as pd
+import os
 from yaml import safe_load
 import re
 from typing import List, Dict
 
-# 加载配置文件
-with open("config.yaml", "r", encoding="utf-8") as f:
-    CONFIG = safe_load(f)
+def _load_config():
+    pkg_root = os.path.dirname(os.path.dirname(__file__))
+    cfg_path = os.path.join(pkg_root, "config.yaml")
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                return safe_load(f) or {}
+        except Exception:
+            return {}
+    return {}
+
+CONFIG = _load_config()
 
 def stat_and_export(cleaned_courses):
     """统计课程数据并导出为Excel"""
@@ -19,6 +29,9 @@ def stat_and_export(cleaned_courses):
     # 1. 总体统计
     # 计算总课程数（经过清洗和去重）
     total_courses = len(df)
+    # 兼容处理：如果没有 '课时_标准化'，尝试从 '课时' 字段生成
+    if "课时_标准化" not in df.columns and "课时" in df.columns:
+        df["课时_标准化"] = pd.to_numeric(df["课时"], errors='coerce').fillna(0).astype(int)
     total_hours = int(df["课时_标准化"].sum()) if "课时_标准化" in df.columns else 0
 
     # 涉及讲师数：排除占位值 '未知讲师' 或空
@@ -37,7 +50,8 @@ def stat_and_export(cleaned_courses):
     
     # 2. 原始清洗后数据（只保留关键列）
     key_columns = ["课程名称", "讲师", "课时", "课时_标准化", "分类", "文件来源"]
-    df_raw = df[key_columns].copy()
+    cols_present = [c for c in key_columns if c in df.columns]
+    df_raw = df[cols_present].copy()
     
     # 3. 导出到Excel
     output_path = CONFIG["output"]["path"]

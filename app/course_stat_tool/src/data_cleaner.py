@@ -1,5 +1,10 @@
-import re
 import os
+try:
+    import regex as re  # 支持 \p{L} 等 Unicode 属性
+    _HAS_REGEX_UNICODE = True
+except Exception:
+    import re  # 回退到标准库 re
+    _HAS_REGEX_UNICODE = False
 from yaml import safe_load
 
 
@@ -20,8 +25,12 @@ def _normalize_course_name(raw_name):
     """增强版课程名称标准化，保留多语种和特殊符号"""
     if not raw_name:
         return ""
-    # 仅移除明显干扰字符（保留字母、数字、汉字、常见符号）
-    return re.sub(r"[^\w\u4e00-\u9fa5·•\-()（）【】:：,，;；/\/\s]", "", str(raw_name)).strip()
+    # 使用 regex 库时允许 Unicode 字母/数字（支持日文、韩文等）
+    s = str(raw_name)
+    if _HAS_REGEX_UNICODE:
+        return re.sub(r"[^\p{L}\p{N}·•\-()（）【】:：,，;；/\\/\s]", "", s).strip()
+    # fallback: 保持以前的宽松规则（包含常见汉字和 \w）
+    return re.sub(r"[^\w\u4e00-\u9fa5·•\-()（）【】:：,，;；/\\/\s]", "", s).strip()
 
 
 def clean_courses(raw_courses, dedupe_keys=None):
@@ -59,14 +68,24 @@ def clean_courses(raw_courses, dedupe_keys=None):
         if not category:
             category = "未知"
 
-        # 课时字段保留或兼容处理
-        class_hour = course.get("课时", course.get("课时_标准化", 0))
-        try:
-            class_hour = int(class_hour)
-        except Exception:
-            # 尝试从字符串中提取数字
-            m = re.findall(r'\d+', str(class_hour))
-            class_hour = int(m[0]) if m else 0
+        # 课时字段保留或兼容处理，增强对 '36h','2-4 小时' 等格式的识别
+        raw_hour = course.get("课时", course.get("课时_标准化", 0))
+        class_hour = 0
+        if isinstance(raw_hour, (int, float)):
+            try:
+                class_hour = int(raw_hour)
+            except Exception:
+                class_hour = 0
+        else:
+            s = str(raw_hour)
+            # 优先匹配类似 '36 课时' / '36小时' / '36h' 等
+            m = re.search(r'(\d+)\s*(?:课时|小时|h|H)?', s)
+            if m:
+                class_hour = int(m.group(1))
+            else:
+                # 兜底：提取任意数字
+                m2 = re.findall(r'\d+', s)
+                class_hour = int(m2[0]) if m2 else 0
 
         cleaned_course = {
             "文件来源": course.get("文件来源", ""),

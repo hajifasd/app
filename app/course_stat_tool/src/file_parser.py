@@ -5,9 +5,18 @@ import re
 from yaml import safe_load
 from typing import List, Dict
 
-# 加载配置文件
-with open("config.yaml", "r", encoding="utf-8") as f:
-    CONFIG = safe_load(f)
+def _load_config():
+    pkg_root = os.path.dirname(os.path.dirname(__file__))
+    cfg_path = os.path.join(pkg_root, "config.yaml")
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                return safe_load(f) or {}
+        except Exception:
+            return {}
+    return {}
+
+CONFIG = _load_config()
 
 def get_file_list(folder_path):
     """扫描文件夹，获取所有Excel和PDF文件路径"""
