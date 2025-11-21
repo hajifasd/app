@@ -21,40 +21,58 @@ from datetime import datetime
 
 
 def extract_teacher_from_cell(text):
-    """优化后的讲师提取，支持多语种和特殊符号"""
+    """优化后的讲师提取，支持多语种和特殊符号，并能处理多讲师分隔"""
     if not text:
         return "未知讲师"
-    # 扩展关键字匹配（支持中英文冒号和分隔符）
+    # 关键字优先匹配
     patterns = [
-        r'讲师[:：]\s*([^，,;/\\()\n]+)',
-        r'教师[:：]\s*([^，,;/\\()\n]+)',
-        r'授课人[:：]\s*([^，,;/\\()\n]+)',
-        r'Instructor[:：]\s*([^,;\/\\()\n]+)',  # 英文标识
-        r'Teacher[:：]\s*([^,;\/\\()\n]+)'
+        r'(?:讲师|教师|授课人|主讲)[:：]\s*([^，,;/\\()\n]+)',
+        r'(?:Instructor|Teacher)[:：]\s*([^,;\/\\()\n]+)'
     ]
     for p in patterns:
         m = re.search(p, text)
         if m:
-            return m.group(1).strip()
-    
-    # 多语种人名判断（放宽限制）
+            name = m.group(1).strip()
+            # 处理多讲师分隔，如 '张三/李四' 或 '张三, 李四'
+            for sep in ['/', ',', '，', ';', '；']:
+                if sep in name:
+                    return name.split(sep)[0].strip()
+            return name
+
+    # 结尾处格式如 '...：张三' 或 '... / 张三'，优先抓取最后一段
+    m2 = re.search(r'[:：/]\s*([^/，,;\n]+)$', text)
+    if m2:
+        candidate = re.sub(r'[()（）].*?$', '', m2.group(1).strip())
+        # 分割多讲师，取第一个
+        for sep in ['/', ',', '，', ';', '；']:
+            if sep in candidate:
+                return candidate.split(sep)[0].strip()
+        return candidate
+
+    # 尝试按常见分隔符分割整段文本并寻找合理候选
     def is_name(s):
         s = s.strip()
-        if not s or len(s) > 50:
+        if not s or len(s) > 60:
             return False
-        # 排除明显非人名的关键词（扩展列表）
-        exclude_keywords = ["课程", "计算机", "数学", "教室", "楼", "实验", "周次", "节次"]
-        if any(k in s for k in exclude_keywords):
+        # 排除明显非人名的关键词
+        if any(k in s for k in ["课程", "教室", "星期", "周次", "节次", "班"]):
             return False
-        # 允许包含字母、汉字、点、横线等
-        return re.match(r'^[\w\u4e00-\u9fa5·•\- ]+$', s) is not None
+        # 允许多语种（如果使用 regex 可支持 \p{L}），fallback 到常规范围
+        try:
+            # try unicode-aware pattern if available
+            return re.match(r'^[\p{L}\w\u4e00-\u9fa5·•\- ]+$', s, flags=re.IGNORECASE) is not None
+        except Exception:
+            return re.match(r'^[\w\u4e00-\u9fa5·•\- ]+$', s) is not None
 
-    # 尝试按常见分隔符分割
     for sep in [r'[\/，,;:\t]', r'[|]', r'[()]']:
         candidates = re.split(sep, text)
         for cand in candidates:
             c = re.sub(r'[()（）].*?$', '', cand).strip()
             if is_name(c):
+                # 多讲师取第一个
+                for s in ['/', ',', '，', ';', '；']:
+                    if s in c:
+                        return c.split(s)[0].strip()
                 return c
     return "未知讲师"
 

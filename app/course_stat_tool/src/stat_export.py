@@ -53,8 +53,18 @@ def stat_and_export(cleaned_courses):
     cols_present = [c for c in key_columns if c in df.columns]
     df_raw = df[cols_present].copy()
     
-    # 3. 导出到Excel
-    output_path = CONFIG["output"]["path"]
+    # 3. 导出到Excel（确保路径为基于配置文件的绝对路径）
+    output_rel = CONFIG.get("output", {}).get("path", "./课程统计结果.xlsx")
+    pkg_root = os.path.dirname(os.path.dirname(__file__))
+    output_path = os.path.abspath(os.path.join(pkg_root, output_rel))
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # 补充缺失关键列，避免写入时报错
+    required_columns = ["课程名称", "讲师", "课时", "课时_标准化", "分类", "文件来源"]
+    for col in required_columns:
+        if col not in df_raw.columns:
+            df_raw[col] = ""
+
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         df_raw.to_excel(writer, sheet_name="清洗后课程数据", index=False)
         df_total.to_excel(writer, sheet_name="总体统计", index=False)
@@ -133,3 +143,7 @@ def export_courses_to_csv(courses: List[Dict], output_path: str) -> str:
         df = df.dropna(subset=["课程名称"])
     df.to_csv(output_path, index=False, encoding="utf-8-sig")
     return output_path
+
+def _abs_output_path(rel_path: str) -> str:
+    pkg_root = os.path.dirname(os.path.dirname(__file__))
+    return os.path.abspath(os.path.join(pkg_root, rel_path))
